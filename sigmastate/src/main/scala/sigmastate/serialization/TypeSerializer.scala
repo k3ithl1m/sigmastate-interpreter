@@ -23,100 +23,105 @@ object TypeSerializer {
     embeddableIdToType(code)
   }
 
-  def serialize(tpe: SType, w: SigmaByteWriter): Unit = tpe match {
-    case p: SEmbeddable => w.put(p.typeCode)
-    case SString => w.put(SString.typeCode)
-    case SAny => w.put(SAny.typeCode)
-    case SUnit => w.put(SUnit.typeCode)
-    case SBox => w.put(SBox.typeCode)
-    case SAvlTree => w.put(SAvlTree.typeCode)
-    case SContext => w.put(SContext.typeCode)
-    case SGlobal => w.put(SGlobal.typeCode)
-    case SHeader => w.put(SHeader.typeCode)
-    case SPreHeader => w.put(SPreHeader.typeCode)
-    case c: SCollectionType[a] => c.elemType match {
-      case p: SEmbeddable =>
-        val code = p.embedIn(CollectionTypeCode)
-        w.put(code)
-      case cn: SCollectionType[a] => cn.elemType match {
-        case p: SEmbeddable =>
-          val code = p.embedIn(NestedCollectionTypeCode)
-          w.put(code)
-        case _ =>
-          w.put(CollectionTypeCode)
-          serialize(cn, w)
-      }
-      case t =>
-        w.put(CollectionTypeCode)
-        serialize(t, w)
-    }
-    case o: SOption[a] => o.elemType match {
-      case p: SEmbeddable =>
-        val code = p.embedIn(SOption.OptionTypeCode)
-        w.put(code)
+  def serialize(tpe: SType, w: SigmaByteWriter): Unit = {
+    val depth = w.level
+    w.level = depth + 1
+    tpe match {
+      case p: SEmbeddable => w.put(p.typeCode)
+      case SString => w.put(SString.typeCode)
+      case SAny => w.put(SAny.typeCode)
+      case SUnit => w.put(SUnit.typeCode)
+      case SBox => w.put(SBox.typeCode)
+      case SAvlTree => w.put(SAvlTree.typeCode)
+      case SContext => w.put(SContext.typeCode)
+      case SGlobal => w.put(SGlobal.typeCode)
+      case SHeader => w.put(SHeader.typeCode)
+      case SPreHeader => w.put(SPreHeader.typeCode)
       case c: SCollectionType[a] => c.elemType match {
         case p: SEmbeddable =>
-          val code = p.embedIn(SOption.OptionCollectionTypeCode)
+          val code = p.embedIn(CollectionTypeCode)
           w.put(code)
-        case _ =>
-          w.put(SOption.OptionTypeCode)
-          serialize(c, w)
-      }
-      case t =>
-        w.put(SOption.OptionTypeCode)
-        serialize(t, w)
-    }
-    case _ @ STuple(Seq(t1, t2)) => (t1, t2) match {
-      case (p: SEmbeddable, _) =>
-        if (p == t2) {
-          // Symmetric pair of primitive types (`(Int, Int)`, `(Byte,Byte)`, etc.)
-          val code = p.embedIn(STuple.PairSymmetricTypeCode)
-          w.put(code)
-        } else {
-          // Pair of types where first is primitive (`(_, Int)`)
-          val code = p.embedIn(STuple.Pair1TypeCode)
-          w.put(code)
-          serialize(t2, w)
+        case cn: SCollectionType[a] => cn.elemType match {
+          case p: SEmbeddable =>
+            val code = p.embedIn(NestedCollectionTypeCode)
+            w.put(code)
+          case _ =>
+            w.put(CollectionTypeCode)
+            serialize(cn, w)
         }
-      case (_, p: SEmbeddable) =>
-        // Pair of types where second is primitive (`(Int, _)`)
-        val code = p.embedIn(STuple.Pair2TypeCode)
-        w.put(code)
-        serialize(t1, w)
-      case _ =>
-        // Pair of non-primitive types (`((Int, Byte), (Boolean,Box))`, etc.)
-        w.put(STuple.Pair1TypeCode)
-        serialize(t1, w)
-        serialize(t2, w)
+        case t =>
+          w.put(CollectionTypeCode)
+          serialize(t, w)
+      }
+      case o: SOption[a] => o.elemType match {
+        case p: SEmbeddable =>
+          val code = p.embedIn(SOption.OptionTypeCode)
+          w.put(code)
+        case c: SCollectionType[a] => c.elemType match {
+          case p: SEmbeddable =>
+            val code = p.embedIn(SOption.OptionCollectionTypeCode)
+            w.put(code)
+          case _ =>
+            w.put(SOption.OptionTypeCode)
+            serialize(c, w)
+        }
+        case t =>
+          w.put(SOption.OptionTypeCode)
+          serialize(t, w)
+      }
+      case _ @ STuple(Seq(t1, t2)) => (t1, t2) match {
+        case (p: SEmbeddable, _) =>
+          if (p == t2) {
+            // Symmetric pair of primitive types (`(Int, Int)`, `(Byte,Byte)`, etc.)
+            val code = p.embedIn(STuple.PairSymmetricTypeCode)
+            w.put(code)
+          } else {
+            // Pair of types where first is primitive (`(_, Int)`)
+            val code = p.embedIn(STuple.Pair1TypeCode)
+            w.put(code)
+            serialize(t2, w)
+          }
+        case (_, p: SEmbeddable) =>
+          // Pair of types where second is primitive (`(Int, _)`)
+          val code = p.embedIn(STuple.Pair2TypeCode)
+          w.put(code)
+          serialize(t1, w)
+        case _ =>
+          // Pair of non-primitive types (`((Int, Byte), (Boolean,Box))`, etc.)
+          w.put(STuple.Pair1TypeCode)
+          serialize(t1, w)
+          serialize(t2, w)
+      }
+      case STuple(items) if items.length < 2 =>
+        sys.error(s"Invalid Tuple type with less than 2 items $items")
+      case tup: STuple => tup.items.length match {
+        case 3 =>
+          // Triple of types
+          w.put(STuple.TripleTypeCode)
+          for (i <- tup.items)
+            serialize(i, w)
+        case 4 =>
+          // Quadruple of types
+          w.put(STuple.QuadrupleTypeCode)
+          for (i <- tup.items)
+            serialize(i, w)
+        case _ =>
+          // `Tuple` type with more than 4 items `(Int, Byte, Box, Boolean, Int)`
+          serializeTuple(tup, w)
+      }
+      case typeIdent: STypeVar => {
+        w.put(typeIdent.typeCode)
+        val bytes = typeIdent.name.getBytes(StandardCharsets.UTF_8)
+        w.putUByte(bytes.length)
+          .putBytes(bytes)
+      }
     }
-    case STuple(items) if items.length < 2 =>
-      sys.error(s"Invalid Tuple type with less than 2 items $items")
-    case tup: STuple => tup.items.length match {
-      case 3 =>
-        // Triple of types
-        w.put(STuple.TripleTypeCode)
-        for (i <- tup.items)
-          serialize(i, w)
-      case 4 =>
-        // Quadruple of types
-        w.put(STuple.QuadrupleTypeCode)
-        for (i <- tup.items)
-          serialize(i, w)
-      case _ =>
-        // `Tuple` type with more than 4 items `(Int, Byte, Box, Boolean, Int)`
-        serializeTuple(tup, w)
-    }
-    case typeIdent: STypeVar => {
-      w.put(typeIdent.typeCode)
-      val bytes = typeIdent.name.getBytes(StandardCharsets.UTF_8)
-      w.putUByte(bytes.length)
-        .putBytes(bytes)
-    }
+    w.level = depth
   }
 
-  def deserialize(r: SigmaByteReader): SType = deserialize(r, 0)
-
-  private def deserialize(r: SigmaByteReader, depth: Int): SType = {
+  def deserialize(r: SigmaByteReader): SType = {
+    val depth = r.level
+    r.level = depth + 1
     val c = r.getUByte()
     if (c <= 0)
       throw new InvalidTypePrefix(s"Cannot deserialize type prefix $c. Unexpected buffer $r with bytes ${r.getBytes(r.remaining)}")
@@ -141,27 +146,27 @@ object TypeSerializer {
         case STuple.Pair1TypeConstrId => // (_, t2)
           val (t1, t2) = if (primId == 0) {
             // Pair of non-primitive types (`((Int, Byte), (Boolean,Box))`, etc.)
-            (deserialize(r, depth + 1), deserialize(r, depth + 1))
+            (deserialize(r), deserialize(r))
           } else {
             // Pair of types where first is primitive (`(_, Int)`)
-            (getEmbeddableType(primId), deserialize(r, depth + 1))
+            (getEmbeddableType(primId), deserialize(r))
           }
           STuple(t1, t2)
         case STuple.Pair2TypeConstrId => // (t1, _)
           if (primId == 0) {
             // Triple of types
-            val (t1, t2, t3) = (deserialize(r, depth + 1), deserialize(r, depth + 1), deserialize(r, depth + 1))
+            val (t1, t2, t3) = (deserialize(r), deserialize(r), deserialize(r))
             STuple(t1, t2, t3)
           } else {
             // Pair of types where second is primitive (`(Int, _)`)
             val t2 = getEmbeddableType(primId)
-            val t1 = deserialize(r, depth + 1)
+            val t1 = deserialize(r)
             STuple(t1, t2)
           }
         case STuple.PairSymmetricTypeConstrId => // (_, _)
           if (primId == 0) {
             // Quadruple of types
-            val (t1, t2, t3, t4) = (deserialize(r, depth + 1), deserialize(r, depth + 1), deserialize(r, depth + 1), deserialize(r, depth + 1))
+            val (t1, t2, t3, t4) = (deserialize(r), deserialize(r), deserialize(r), deserialize(r))
             STuple(t1, t2, t3, t4)
           } else {
             // Symmetric pair of primitive types (`(Int, Int)`, `(Byte,Byte)`, etc.)
@@ -176,7 +181,7 @@ object TypeSerializer {
           val len = r.getUByte()
           val items = safeNewArray[SType](len)
           cfor(0)(_ < len, _ + 1) { i =>
-            items(i) = deserialize(r, depth + 1)
+            items(i) = deserialize(r)
           }
           STuple(items)
         }
@@ -199,12 +204,13 @@ object TypeSerializer {
           NoType
       }
     }
+    r.level = depth
     tpe
   }
 
   private def getArgType(r: SigmaByteReader, primId: Int, depth: Int) =
     if (primId == 0)
-      deserialize(r, depth + 1)
+      deserialize(r)
     else
       getEmbeddableType(primId)
 
